@@ -1,0 +1,26 @@
+--- a/src/unstoppable/UnstoppableVault.sol
++++ b/src/unstoppable/UnstoppableVault.sol
+@@ -82,7 +82,6 @@
+         if (amount == 0) revert InvalidAmount(0); // fail early
+         if (address(asset) != _token) revert UnsupportedCurrency(); // enforce ERC3156 requirement
+         uint256 balanceBefore = totalAssets();
+-        if (convertToShares(totalSupply) != balanceBefore) revert InvalidBalance(); // enforce ERC4626 requirement
+ 
+         // transfer tokens out + execute callback on receiver
+         ERC20(_token).safeTransfer(address(receiver), amount);
+@@ -99,6 +98,9 @@
+         // pull amount + fee from receiver, then pay the fee to the recipient
+         ERC20(_token).safeTransferFrom(address(receiver), address(this), amount + fee);
+         ERC20(_token).safeTransfer(feeRecipient, fee);
++
++        // ensure the loan (plus fee) was repaid in full
++        if (totalAssets() < balanceBefore) revert InvalidBalance();
+ 
+         return true;
+     }
+@@ -131,4 +133,4 @@
+         if (flag) _pause();
+         else _unpause();
+     }
+-}
++}

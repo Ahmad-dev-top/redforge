@@ -1,0 +1,6 @@
+Replay of the saved Verify.t.sol and patched UnstoppableVault from run 9f845086.
+The audit process recorded halmos_proved=true and did not retain Halmos stdout.
+
+Running 1 tests for test/Verify.t.sol:UnstoppableVaultProof
+[PASS] check_flashLoanNeverBlockedByBalanceMismatch() (paths: 47, time: 8.28s, bounds: [])
+Symbolic test result: 1 passed; 0 failed; time: 9.31s

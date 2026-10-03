@@ -90,15 +90,41 @@ def test_halmos_counterexample_not_verified(tmp_path):
     assert "Counterexample" in r.halmos_counterexample or "counterexample" in r.halmos_counterexample.lower()
 
 
+def _diff_calls(llm: StubLLM) -> list[dict[str, str]]:
+    return [c for c in llm.calls if "LEGITIMATE" in c["system"]]
+
+
+def test_differential_retries_then_passes(tmp_path):
+    state = _state_patched(tmp_path)
+    llm = StubLLM(["bad diff", "good diff", "halmos test"])
+    diff_fail = "[FAIL: InvalidBalance()] test_flashLoanWithFeeAfterGrace()\n"
+    sandbox = QueueSandbox(
+        [REG_PASS, diff_fail, DIFF_PASS, HALMOS_PROVED],
+        exit_codes=[0, 1, 0, 0],
+    )
+    update = run_verification(state, llm, sandbox)
+    assert update["status"] is AuditStatus.VERIFIED
+    assert update["vulnerabilities"][0].verification.differential_equivalent is True
+    calls = _diff_calls(llm)
+    assert len(calls) == 2
+    assert "YOUR PREVIOUS TEST FAILED" in calls[1]["prompt"]
+    assert "forge output (tail):" in calls[1]["prompt"]
+    assert "InvalidBalance" in calls[1]["prompt"]
+
+
 def test_differential_failure_blocks_verified(tmp_path):
     state = _state_patched(tmp_path)
-    llm = StubLLM(["diff test", "halmos test"])
-    # differential test fails even though halmos would prove
+    llm = StubLLM(["bad diff", "bad diff", "bad diff", "halmos test"])
+    # Every attempt fails; the budget is exhausted and the last result is kept.
     diff_fail = "[FAIL] testLegit()\n"
-    sandbox = QueueSandbox([REG_PASS, diff_fail, HALMOS_PROVED], exit_codes=[0, 1, 0])
+    sandbox = QueueSandbox(
+        [REG_PASS, diff_fail, diff_fail, diff_fail, HALMOS_PROVED],
+        exit_codes=[0, 1, 1, 1, 0],
+    )
     update = run_verification(state, llm, sandbox)
     assert "status" not in update
     assert update["vulnerabilities"][0].verification.differential_equivalent is False
+    assert len(_diff_calls(llm)) == settings.verify_max_retries
 
 
 def test_regression_failure_does_not_block_verified(tmp_path):
@@ -124,5 +150,28 @@ def test_parse_halmos():
     assert _parse_halmos(HALMOS_PROVED, 0, False) == (True, "", False)
     proved, cex, to = _parse_halmos(HALMOS_CEX, 1, False)
     assert proved is False and "amount" in cex and to is False
-    assert _parse_halmos("anything", 124, False)[2] is True   # timeout by exit code
-    assert _parse_halmos("...timed out...", 0, False)[2] is True
+    # A real timeout is only exit 124 or the sandbox deadline.
+    assert _parse_halmos(HALMOS_TIMEOUT, 124, False) == (False, "", True)
+    assert _parse_halmos("halmos running", 0, True) == (False, "", True)
+    # Usage text mentions --solver-timeout-*; that is not a timeout.
+    usage = (
+        "usage: halmos [-h] [--solver-timeout-branching TIMEOUT]\n"
+        "halmos: error: unrecognized arguments: --match-path test/Verify.t.sol\n"
+    )
+    assert _parse_halmos(usage, 0, False) == (False, "", False)
+    assert _parse_halmos("...timed out...", 0, False) == (False, "", False)
+    # A sibling-contract build failure is not a proof, a timeout, or a refutation.
+    build = (
+        "Compiling 219 files with Solc 0.8.25\n"
+        "Error: Compiler run failed:\n"
+        'Error (2904): Declaration "WETH" not found\n'
+        "Build failed: ['forge', 'build', '--build-info']\n"
+    )
+    assert _parse_halmos(build, 0, False) == (False, "", False)
+    # Forge artifact warnings contain "KeyError:"; a real pass still counts.
+    proved_with_warning = (
+        "Skipped console2.json due to parsing failure: KeyError: 'metadata'\n"
+        "[PASS] check_flashLoanCannotBeBricked(uint256) (paths: 29, time: 5.80s)\n"
+        "Symbolic test result: 1 passed; 0 failed; time: 6.79s\n"
+    )
+    assert _parse_halmos(proved_with_warning, 0, False) == (True, "", False)

@@ -53,7 +53,9 @@ _HALMOS_SYSTEM = """You are a formal-verification engineer. Write a Halmos symbo
 the patched contract can no longer exhibit the vulnerability, for ANY symbolic
 input. The function name MUST start with `check_`. Use symbolic values
 (svm.createUint, symbolic addresses) and assert the safety property that the
-exploit violated.
+exploit violated. If you declare an SVM interface, its address MUST be
+0xF3993A62377BCd56AE39D773740A5390411E8BC9. Every address literal must be a
+valid EIP-55 checksum.
 
 Output ONLY the Solidity test source. No prose, no fences. Import forge-std Test.
 """
@@ -75,11 +77,29 @@ def _verifiable_vuln(state: AuditState) -> Vulnerability | None:
 
 
 def _parse_halmos(output: str, exit_code: int | None, timed_out: bool) -> tuple[bool, str, bool]:
-    """Return (proved, counterexample, timed_out)."""
-    low = output.lower()
-    is_timeout = timed_out or exit_code == 124 or "timeout" in low or "timed out" in low
-    if is_timeout:
+    """Return (proved, counterexample, timed_out).
+
+    A timeout is only the sandbox deadline or the shell `timeout` exit 124.
+    A usage or build error is not a proof, a counterexample, or a timeout.
+    A symbolic result wins over incidental "error:" text such as KeyError warnings.
+    """
+    if timed_out or exit_code == 124:
         return False, "", True
+    low = output.lower()
+    ran = "[pass]" in low or "[fail]" in low or "symbolic test result" in low or "counterexample" in low
+    if not ran and ("compiler run failed" in low or "build failed" in low):
+        line = next(
+            (
+                ln.strip()
+                for ln in output.splitlines()
+                if any(tok in ln.lower() for tok in ("compiler run failed", "error", "build failed"))
+            ),
+            "build failed",
+        )
+        log.warning("halmos build failed: %s", line[:300])
+        return False, "", False
+    if not ran and ("error:" in low or "unrecognized arguments" in low or "usage: halmos" in low):
+        return False, "", False
     if "counterexample" in low:
         m = re.search(r"(?i)counterexample.*", output)
         return False, (m.group(0)[:500] if m else "counterexample found"), False
@@ -122,13 +142,32 @@ def run_verification(state: AuditState, llm: LLMClient, sandbox: SandboxRunner |
     reg = run_forge_suite_against_patch(root, workspace, contract_rel, patched_source, sandbox)
     existing_tests_pass = reg.passed
 
-    # 2. Differential — legitimate behaviour preserved.
-    diff_test, c1 = _gen(llm, _DIFF_SYSTEM, ctx + "\nWrite the legitimate-behaviour test now.")
-    cost += c1
-    dres = run_poc_against_patch(
-        root, workspace, contract_rel, patched_source, diff_test, sandbox, test_filename="Diff.t.sol"
-    )
-    differential_equivalent = dres.compiled and dres.passed
+    # 2. Differential — legitimate behaviour preserved. One-shot generation is
+    # noisy, so retry with the forge tail the same way the PoC node does.
+    # Halmos is not retried: a timeout stays "not proved".
+    diff_base = ctx + "\nWrite the legitimate-behaviour test now."
+    error_log = ""
+    dres = None
+    for attempt in range(1, settings.verify_max_retries + 1):
+        prompt = diff_base
+        if error_log:
+            prompt += (
+                "\n\nYOUR PREVIOUS TEST FAILED. Fix it and return the corrected test only.\n"
+                f"forge output (tail):\n{error_log[-2500:]}"
+            )
+        diff_test, c1 = _gen(llm, _DIFF_SYSTEM, prompt)
+        cost += c1
+        dres = run_poc_against_patch(
+            root, workspace, contract_rel, patched_source, diff_test, sandbox, test_filename="Diff.t.sol"
+        )
+        log.info(
+            "differential attempt %d: compiled=%s passed=%s",
+            attempt, dres.compiled, dres.passed,
+        )
+        if dres.compiled and dres.passed:
+            break
+        error_log = dres.output
+    differential_equivalent = bool(dres and dres.compiled and dres.passed)
 
     # 3. Halmos — symbolic proof the class cannot recur.
     halmos_test, c2 = _gen(llm, _HALMOS_SYSTEM, ctx + "\nWrite the Halmos check_ property now.")

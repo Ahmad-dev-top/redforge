@@ -55,6 +55,7 @@ class Settings(BaseSettings):
 
     # --- Verification ------------------------------------------------------
     halmos_timeout_s: int = Field(default=120)  # symbolic proof budget; timeout != refutation
+    verify_max_retries: int = Field(default=3)  # differential self-correction budget
 
     # --- Paths -------------------------------------------------------------
     work_root: Path = Field(default=Path(".redforge_work"))
