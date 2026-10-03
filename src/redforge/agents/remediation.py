@@ -127,6 +127,7 @@ def run_remediation(state: AuditState, llm: LLMClient, sandbox: SandboxRunner | 
             compiles=fr.compiled,
             poc_defeated=defeated,
             attempts=attempt,
+            patched_source=patched_source,
         )
         log.info(
             "remediation attempt %d: compiled=%s poc_defeated=%s",

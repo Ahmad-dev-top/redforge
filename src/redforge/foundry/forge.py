@@ -97,6 +97,52 @@ def run_poc_against_patch(
     return _to_result(res)
 
 
+def run_forge_suite_against_patch(
+    repo_ro: Path,
+    workspace_rw: Path,
+    contract_rel: str,
+    patched_source: str,
+    sandbox: SandboxRunner | None = None,
+    exclude: str = "test/Exploit.t.sol",
+) -> ForgeResult:
+    """Run the repo's existing test suite against the patched contract, excluding
+    our injected exploit. Used by verification for the regression check."""
+    sandbox = sandbox or SandboxRunner()
+    workspace_rw.mkdir(parents=True, exist_ok=True)
+    (workspace_rw / "patched.sol").write_text(patched_source)
+    cmd = (
+        "rm -rf /work/target; cp -r /repo/. /work/target 2>/dev/null; "
+        f"cp /work/patched.sol '/work/target/{contract_rel}' && cd /work/target && "
+        f"forge test -vv --no-match-path '{exclude}' 2>&1"
+    )
+    return _to_result(sandbox.run(cmd, repo_ro, workspace_rw))
+
+
+def run_halmos_against_patch(
+    repo_ro: Path,
+    workspace_rw: Path,
+    contract_rel: str,
+    patched_source: str,
+    test_source: str,
+    sandbox: SandboxRunner | None = None,
+    timeout_s: int = 120,
+    test_filename: str = "Verify.t.sol",
+) -> ForgeResult:
+    """Run a Halmos symbolic property test against the patched contract, bounded
+    by `timeout_s` (the shell `timeout` returns 124 on expiry)."""
+    sandbox = sandbox or SandboxRunner()
+    workspace_rw.mkdir(parents=True, exist_ok=True)
+    (workspace_rw / "patched.sol").write_text(patched_source)
+    (workspace_rw / test_filename).write_text(test_source)
+    cmd = (
+        "rm -rf /work/target; cp -r /repo/. /work/target 2>/dev/null; "
+        f"cp /work/patched.sol '/work/target/{contract_rel}' && "
+        f"mkdir -p /work/target/test && cp /work/{test_filename} /work/target/test/{test_filename} && "
+        f"cd /work/target && timeout {timeout_s} halmos --match-path 'test/{test_filename}' 2>&1"
+    )
+    return _to_result(sandbox.run(cmd, repo_ro, workspace_rw))
+
+
 def _to_result(res) -> ForgeResult:
     out = (res.stdout or "") + (res.stderr or "")
     # `forge test` exits non-zero on both compile failure and test failure, so

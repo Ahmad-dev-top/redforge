@@ -140,6 +140,7 @@ class Patch(BaseModel):
     compiles: bool = False
     poc_defeated: bool = False    # the confirming exploit no longer confirms
     attempts: int = 0
+    patched_source: str = ""      # full patched contract — re-applied for verification
 
 
 class VerificationReport(BaseModel):
@@ -149,6 +150,7 @@ class VerificationReport(BaseModel):
     differential_equivalent: bool = False  # behaviour unchanged on safe inputs
     halmos_proved: bool = False           # symbolic proof of the property
     halmos_counterexample: str = ""
+    halmos_timed_out: bool = False        # undecided within budget (not a refutation)
     verified: bool = False                # all gates green
 
 

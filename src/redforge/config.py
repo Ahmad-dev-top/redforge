@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # --- Remediation -------------------------------------------------------
     remediation_max_retries: int = Field(default=3)  # patch self-correction budget
 
+    # --- Verification ------------------------------------------------------
+    halmos_timeout_s: int = Field(default=120)  # symbolic proof budget; timeout != refutation
+
     # --- Paths -------------------------------------------------------------
     work_root: Path = Field(default=Path(".redforge_work"))
     benchmarks_root: Path = Field(default=Path("benchmarks"))
