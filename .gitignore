@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.redforge_work/
+reports/
+benchmarks/*/
+.env
+# Foundry build output and sandbox workspace copies
+cache/
+out/
+target/
