@@ -70,8 +70,13 @@ class EvalReport:
         path.write_text(json.dumps(asdict(self), indent=2, default=str))
 
 
-def run_eval(dataset: str, audit_fn: AuditFn, limit: int | None = None) -> EvalReport:
-    cases = load_dataset(dataset)
+def run_eval(
+    dataset: str,
+    audit_fn: AuditFn,
+    limit: int | None = None,
+    cases: list[BenchmarkCase] | None = None,
+) -> EvalReport:
+    cases = cases if cases is not None else load_dataset(dataset)
     if limit:
         cases = cases[:limit]
     results: list[CaseResult] = []
@@ -89,7 +94,10 @@ def run_eval(dataset: str, audit_fn: AuditFn, limit: int | None = None) -> EvalR
             cr.exploit_confirmed = any(
                 v.poc and v.poc.oracle_confirmed for v in state.vulnerabilities
             )
-            cr.patched = any(v.patch and v.patch.compiles for v in state.vulnerabilities)
+            cr.patched = any(
+                v.patch and v.patch.compiles and v.patch.poc_defeated
+                for v in state.vulnerabilities
+            )
             cr.verified = any(
                 v.verification and v.verification.verified for v in state.vulnerabilities
             )

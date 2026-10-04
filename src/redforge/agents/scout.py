@@ -34,15 +34,28 @@ def run_scout(state: AuditState, sandbox: SandboxRunner) -> dict:
 
     functions = build_index(root, state.repo_map.contract_files)
 
-    try:
-        findings = run_slither(root, workspace, sandbox)
-    except Exception as exc:  # noqa: BLE001 - static analysis is best-effort
-        log.warning("slither failed: %s", exc)
-        findings = []
+    if state.seed_findings is not None:
+        findings = list(state.seed_findings)
+        log.info("scout: using %d cached slither findings", len(findings))
+    else:
+        try:
+            findings = run_slither(root, workspace, sandbox)
+        except Exception as exc:  # noqa: BLE001 - static analysis is best-effort
+            log.warning("slither failed: %s", exc)
+            findings = []
+
+    # Benchmark scoping: when a scope_prefix is set (e.g. "src/unstoppable/"),
+    # keep only findings/functions under it so each challenge is audited in
+    # isolation even though Slither scanned the whole monorepo.
+    if state.scope_prefix:
+        p = state.scope_prefix
+        findings = [f for f in findings if (f.file or "").startswith(p)]
+        functions = [fn for fn in functions if fn.file.startswith(p)]
 
     log.info(
-        "scout: %d findings, %d functions on %s",
+        "scout: %d findings, %d functions on %s scope=%s",
         len(findings), len(functions), state.repo_map.kind.value,
+        state.scope_prefix or "-",
     )
     return {
         "functions": functions,

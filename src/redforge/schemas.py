@@ -178,6 +178,9 @@ class AuditState(BaseModel):
     run_id: str
     status: AuditStatus = AuditStatus.PENDING
     repo_map: RepoMap | None = None
+    scope_prefix: str = ""        # if set, scout keeps only files under this path
+    # When set, scout skips Slither and filters this list. None means scan.
+    seed_findings: list[Finding] | None = None
     functions: list[FunctionRef] = Field(default_factory=list)
     findings: list[Finding] = Field(default_factory=list)
     hypotheses: list[AttackHypothesis] = Field(default_factory=list)

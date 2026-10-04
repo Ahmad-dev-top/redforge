@@ -105,6 +105,35 @@ def eval_cmd(dataset: str, limit: int | None = typer.Option(None, "--limit")) ->
     typer.echo(f"saved {out}")
 
 
+@app.command("bench-dvd")
+def bench_dvd(
+    url: str = "https://github.com/theredguild/damn-vulnerable-defi",
+    limit: int | None = typer.Option(None, "--limit"),
+    only: str | None = typer.Option(None, "--only", help="Comma-separated challenge names"),
+) -> None:
+    """Benchmark the full pipeline across Damn Vulnerable DeFi challenges."""
+    configure_logging()
+    settings.ensure_dirs()
+    import uuid as _uuid
+
+    from redforge.eval import challenge_table, run_dvd_benchmark
+    from redforge.llm import AnthropicLLM
+    from redforge.repo import clone_repo, detect_project, fetch_dependencies
+
+    run_id = _uuid.uuid4().hex[:8]
+    repo = clone_repo(url, run_id)
+    fetch_dependencies(repo, detect_project(repo))
+    report = run_dvd_benchmark(
+        AnthropicLLM(), SandboxRunner(), repo, limit=limit, only=only
+    )
+    table = challenge_table(report)
+    out = settings.reports_root / ("dvd_benchmark_only.md" if only else "dvd_benchmark.md")
+    out.write_text(table, encoding="utf-8")
+    report.save(settings.reports_root / "dvd_benchmark.json")
+    typer.echo(table)
+    typer.echo(f"\nsaved {out}")
+
+
 def main() -> None:
     app()
 
