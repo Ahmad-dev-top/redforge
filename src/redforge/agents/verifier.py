@@ -46,6 +46,9 @@ _DIFF_SYSTEM = """You are a smart-contract test engineer. Write a Foundry test t
 LEGITIMATE behaviour of the patched contract (normal deposits, withdrawals,
 transfers — NOT the exploit) and asserts it still works as expected.
 
+Call only functions that appear in the patched source or in forge-std. Every
+address literal must be `address(0x` plus 40 hex digits, not a word.
+
 Output ONLY the Solidity test source. No prose, no fences. Import forge-std Test.
 """
 
@@ -55,7 +58,10 @@ input. The function name MUST start with `check_`. Use symbolic values
 (svm.createUint, symbolic addresses) and assert the safety property that the
 exploit violated. If you declare an SVM interface, its address MUST be
 0xF3993A62377BCd56AE39D773740A5390411E8BC9. Every address literal must be a
-valid EIP-55 checksum.
+valid EIP-55 checksum. Call only functions that appear in the patched source,
+forge-std, or the SVM interface you declared. setUp() must be concrete:
+no symbolic values, and a path Halmos can execute (a constructor that
+requires msg.value often has no successful path).
 
 Output ONLY the Solidity test source. No prose, no fences. Import forge-std Test.
 """
@@ -74,6 +80,21 @@ def _verifiable_vuln(state: AuditState) -> Vulnerability | None:
         ):
             return v
     return None
+
+
+def _halmos_not_executed(output: str) -> bool:
+    """True when the property never reached the solver.
+
+    A compiler error or a setUp() with no successful path is a bad test, not a
+    refutation. A counterexample is handled separately and is not retried.
+    """
+    low = output.lower()
+    return (
+        "compiler run failed" in low
+        or "compilation failed" in low
+        or "setup() failed" in low
+        or "no successful path found in setup" in low
+    )
 
 
 def _parse_halmos(output: str, exit_code: int | None, timed_out: bool) -> tuple[bool, str, bool]:
@@ -144,7 +165,9 @@ def run_verification(state: AuditState, llm: LLMClient, sandbox: SandboxRunner |
 
     # 2. Differential — legitimate behaviour preserved. One-shot generation is
     # noisy, so retry with the forge tail the same way the PoC node does.
-    # Halmos is not retried: a timeout stays "not proved".
+    # Halmos retries a compiler failure the same way. A timeout stays "not
+    # proved", and a counterexample is not retried: rewriting the property
+    # until the solver is happy would weaken the proof.
     diff_base = ctx + "\nWrite the legitimate-behaviour test now."
     error_log = ""
     dres = None
@@ -170,13 +193,40 @@ def run_verification(state: AuditState, llm: LLMClient, sandbox: SandboxRunner |
     differential_equivalent = bool(dres and dres.compiled and dres.passed)
 
     # 3. Halmos — symbolic proof the class cannot recur.
-    halmos_test, c2 = _gen(llm, _HALMOS_SYSTEM, ctx + "\nWrite the Halmos check_ property now.")
-    cost += c2
-    hres = run_halmos_against_patch(
-        root, workspace, contract_rel, patched_source, halmos_test, sandbox,
-        timeout_s=settings.halmos_timeout_s,
+    halmos_base = ctx + "\nWrite the Halmos check_ property now."
+    halmos_error = ""
+    hres = None
+    for attempt in range(1, settings.verify_max_retries + 1):
+        prompt = halmos_base
+        if halmos_error:
+            prompt += (
+                "\n\nYOUR PREVIOUS PROPERTY DID NOT RUN. Fix it and return the "
+                "corrected test only. setUp() must take a concrete path Halmos "
+                "can execute.\n"
+                f"forge/halmos output (tail):\n{halmos_error[-2500:]}"
+            )
+        halmos_test, c2 = _gen(llm, _HALMOS_SYSTEM, prompt)
+        cost += c2
+        hres = run_halmos_against_patch(
+            root, workspace, contract_rel, patched_source, halmos_test, sandbox,
+            timeout_s=settings.halmos_timeout_s,
+        )
+        halmos_proved, halmos_cex, halmos_timeout = _parse_halmos(
+            hres.output, hres.exit_code, hres.timed_out,
+        )
+        log.info(
+            "halmos attempt %d: proved=%s timeout=%s counterexample=%s",
+            attempt, halmos_proved, halmos_timeout, bool(halmos_cex),
+        )
+        if halmos_proved or halmos_timeout or halmos_cex:
+            break
+        if not _halmos_not_executed(hres.output):
+            break
+        halmos_error = hres.output
+    assert hres is not None
+    halmos_proved, halmos_cex, halmos_timeout = _parse_halmos(
+        hres.output, hres.exit_code, hres.timed_out,
     )
-    halmos_proved, halmos_cex, halmos_timeout = _parse_halmos(hres.output, hres.exit_code, hres.timed_out)
 
     verified = bool(vuln.patch.poc_defeated and differential_equivalent and halmos_proved)
     report = VerificationReport(

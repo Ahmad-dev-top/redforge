@@ -52,9 +52,17 @@ Return ONLY a JSON array (no prose, no markdown fences). Each element:
   "vuln_class": one of ["reentrancy","access_control","arithmetic","oracle_manipulation",
      "unchecked_call","front_running","denial_of_service","bad_randomness","business_logic","other"],
   "oracle": one of ["balance_increase","invariant_broken","unauthorized_state","funds_locked"],
+  "severity": one of ["critical","high","medium","low","info"],  // YOUR impact assessment
+  "confidence": number between 0 and 1,  // YOUR confidence this is a real, exploitable bug
   "rationale": string                  // one or two sentences, why it is exploitable
 }
-Only include hypotheses you can justify from the code. Prefer high-impact, high-confidence targets."""
+Only include hypotheses you can justify from the code.
+
+Ranking matters: list the MOST promising hypothesis first. Your severity and
+confidence are the primary ranking signal when static analysis is unavailable
+(no findings). Be discriminating — reserve high/critical severity and
+confidence above 0.7 for cases you can clearly justify from the code, and give
+weak guesses low severity and low confidence so they are not wastefully tested."""
 
 
 def _strip_fences(text: str) -> str:
@@ -64,11 +72,31 @@ def _strip_fences(text: str) -> str:
     return text
 
 
-def _confidence_for(finding_id: str | None, findings: list[Finding]) -> tuple[float, Severity]:
-    for f in findings:
-        if f.id == finding_id:
-            return f.confidence, f.severity
-    return 0.5, Severity.MEDIUM  # agent-originated, no static backing
+def _coerce_severity(value: object) -> Severity:
+    try:
+        return Severity(str(value).lower())
+    except ValueError:
+        return Severity.MEDIUM
+
+
+def _coerce_confidence(value: object) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return 0.5
+
+
+def _resolve_score(item: dict, findings: list[Finding]) -> tuple[float, Severity]:
+    """A static finding's severity/confidence is grounded, so it wins when the
+    hypothesis is backed by one. Otherwise (the real-repo case, where Slither
+    may produce nothing) fall back to the strategist's own self-assessment so
+    hypotheses still rank by the model's judgement instead of a flat default."""
+    fid = item.get("finding_id")
+    if fid:
+        for f in findings:
+            if f.id == fid:
+                return f.confidence, f.severity
+    return _coerce_confidence(item.get("confidence")), _coerce_severity(item.get("severity"))
 
 
 def _select_findings(state: AuditState) -> list[Finding]:
@@ -115,7 +143,7 @@ def _parse(text: str) -> list[dict]:
 def _to_hypotheses(raw: list[dict], state: AuditState) -> list[AttackHypothesis]:
     hyps: list[AttackHypothesis] = []
     for i, item in enumerate(raw):
-        conf, sev = _confidence_for(item.get("finding_id"), state.findings)
+        conf, sev = _resolve_score(item, state.findings)
         score = int(_SEV_WEIGHT.get(sev, 3) * conf * 100)
         hyps.append(
             AttackHypothesis(
@@ -126,61 +154,48 @@ def _to_hypotheses(raw: list[dict], state: AuditState) -> list[AttackHypothesis]
                 vuln_class=VulnClass(item["vuln_class"]),
                 oracle=OracleType(item["oracle"]),
                 rationale=str(item.get("rationale", ""))[:500],
+                confidence=conf,
                 priority=score,
             )
         )
+    # Stable sort by priority desc keeps the model's own ordering for ties.
     hyps.sort(key=lambda h: h.priority, reverse=True)
     return hyps
-
-
-def _load(text: str, state: AuditState) -> list[AttackHypothesis]:
-    return _to_hypotheses(_parse(text), state)
-
-
-def _failure(state: AuditState, exc: Exception, cost: float) -> dict:
-    if isinstance(exc, json.JSONDecodeError) or str(exc).startswith("expected a JSON"):
-        message = f"strategist: unparseable LLM output: {exc}"
-    elif isinstance(exc, (KeyError, ValueError)):
-        message = f"strategist: invalid hypothesis field: {exc}"
-    else:
-        message = f"strategist: llm call failed: {exc}"
-    return {
-        "status": AuditStatus.FAILED,
-        "errors": [*state.errors, message],
-        "token_cost_usd": state.token_cost_usd + cost,
-    }
 
 
 def run_strategist(state: AuditState, llm: LLMClient) -> dict:
     prompt = _build_prompt(state)
     cost = 0.0
 
-    try:
-        res = llm.complete(system=_SYSTEM, prompt=prompt, model=settings.model_strong)
-    except Exception as exc:  # noqa: BLE001 - record provider failures, do not crash the graph
-        return _failure(state, exc, cost)
+    res = llm.complete(system=_SYSTEM, prompt=prompt, model=settings.model_strong)
     cost += res.cost_usd
     try:
-        hyps = _load(res.text, state)
-    except (json.JSONDecodeError, ValueError, KeyError) as exc:
-        # one re-prompt with the validation error, per CURSOR.md §7
-        try:
-            retry = llm.complete(
-                system=_SYSTEM,
-                prompt=(
-                    prompt
-                    + f"\n\nYour previous reply was invalid: {exc}. "
-                    + "Reply with ONLY the JSON array."
-                ),
-                model=settings.model_strong,
-            )
-        except Exception as exc2:  # noqa: BLE001 - record provider failures
-            return _failure(state, exc2, cost)
+        raw = _parse(res.text)
+    except (json.JSONDecodeError, ValueError) as exc:
+        # one re-prompt with the error, per CURSOR.md §7
+        retry = llm.complete(
+            system=_SYSTEM,
+            prompt=prompt + f"\n\nYour previous reply was invalid JSON: {exc}. Reply with ONLY the JSON array.",
+            model=settings.model_strong,
+        )
         cost += retry.cost_usd
         try:
-            hyps = _load(retry.text, state)
-        except (json.JSONDecodeError, ValueError, KeyError) as exc2:
-            return _failure(state, exc2, cost)
+            raw = _parse(retry.text)
+        except (json.JSONDecodeError, ValueError) as exc2:
+            return {
+                "status": AuditStatus.FAILED,
+                "errors": [*state.errors, f"strategist: unparseable LLM output: {exc2}"],
+                "token_cost_usd": state.token_cost_usd + cost,
+            }
+
+    try:
+        hyps = _to_hypotheses(raw, state)
+    except (KeyError, ValueError) as exc:
+        return {
+            "status": AuditStatus.FAILED,
+            "errors": [*state.errors, f"strategist: invalid hypothesis field: {exc}"],
+            "token_cost_usd": state.token_cost_usd + cost,
+        }
 
     status = AuditStatus.HYPOTHESES_READY if hyps else AuditStatus.FAILED
     log.info("strategist: %d hypotheses, status=%s", len(hyps), status.value)

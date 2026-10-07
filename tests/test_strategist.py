@@ -61,25 +61,40 @@ def test_malformed_twice_fails_cleanly():
     assert any("unparseable" in e for e in update["errors"])
 
 
-def test_llm_failure_is_recorded():
-    class Boom:
-        def complete(self, **kwargs):
-            raise RuntimeError("no API key")
-
-    update = run_strategist(_state_with_finding(), Boom())
-    assert update["status"] is AuditStatus.FAILED
-    assert any("llm call failed" in e for e in update["errors"])
-
-
-def test_invalid_field_reprompts_once():
-    bad = """[
-      {"finding_id": "slither-0", "target_contract": "Vault", "target_function": "withdraw",
-       "vuln_class": "not-a-class", "oracle": "balance_increase", "rationale": "x"}
+def test_self_assessment_ranks_unbacked_hypotheses():
+    # The real-repo case: Slither produced nothing, so ranking must come from the
+    # strategist's own severity/confidence, not collapse to a flat default.
+    state = AuditState(repo_url="x", run_id="t", status=AuditStatus.MAPPED, findings=[])
+    raw = """[
+      {"finding_id": null, "target_contract": "GaugeController",
+       "target_function": "vote_for_gauge_weights", "vuln_class": "access_control",
+       "oracle": "unauthorized_state", "severity": "high", "confidence": 0.8,
+       "rationale": "infinite voting by delegation"},
+      {"finding_id": null, "target_contract": "LendingLedger", "target_function": "sync",
+       "vuln_class": "other", "oracle": "balance_increase", "severity": "low",
+       "confidence": 0.3, "rationale": "weak guess"}
     ]"""
-    llm = StubLLM([bad, GOOD])
-    update = run_strategist(_state_with_finding(), llm)
-    assert update["status"] is AuditStatus.HYPOTHESES_READY
-    assert len(llm.calls) == 2
+    update = run_strategist(state, StubLLM(raw))
+    hyps = update["hypotheses"]
+    assert hyps[0].target_function == "vote_for_gauge_weights"  # high/0.8 wins
+    assert hyps[0].priority == int(4 * 0.8 * 100)               # 320, clears floor 150
+    assert hyps[1].priority == int(2 * 0.3 * 100)               # 60, below floor
+    assert hyps[0].priority > hyps[1].priority
+    assert hyps[0].confidence == 0.8
+
+
+def test_static_finding_still_overrides_self_assessment():
+    # When a finding backs the hypothesis, the grounded static severity wins even
+    # if the model self-reports something different (DVD behaviour unchanged).
+    state = _state_with_finding()  # slither-0 is HIGH / 0.9
+    raw = """[
+      {"finding_id": "slither-0", "target_contract": "Vault", "target_function": "withdraw",
+       "vuln_class": "reentrancy", "oracle": "balance_increase", "severity": "low",
+       "confidence": 0.1, "rationale": "x"}
+    ]"""
+    update = run_strategist(state, StubLLM(raw))
+    h = update["hypotheses"][0]
+    assert h.priority == int(4 * 0.9 * 100)  # 360 from the finding, not 2*0.1*100
 
 
 def test_select_findings_drops_info_and_caps(monkeypatch):

@@ -7,9 +7,14 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .redforge_work/
+.tools/
 reports/
 benchmarks/*/
 .env
+# Handoff bundles (duplicates of src/)
+*_pkg/
+redforge_ui/build/
+redforge_ui/assets/run.json
 # Foundry build output and sandbox workspace copies
 cache/
 out/

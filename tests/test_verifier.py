@@ -112,6 +112,55 @@ def test_differential_retries_then_passes(tmp_path):
     assert "InvalidBalance" in calls[1]["prompt"]
 
 
+def test_halmos_compile_failure_is_retried(tmp_path):
+    state = _state_patched(tmp_path)
+    llm = StubLLM(["diff test", "bad halmos", "halmos test"])
+    build = (
+        "Compiling 32 files with Solc 0.8.25\n"
+        "Error: Compiler run failed:\n"
+        'Error (9582): Member "exec" not found or not visible\n'
+    )
+    sandbox = QueueSandbox(
+        [REG_PASS, DIFF_PASS, build, HALMOS_PROVED],
+        exit_codes=[0, 0, 1, 0],
+    )
+    update = run_verification(state, llm, sandbox)
+    assert update["status"] is AuditStatus.VERIFIED
+    calls = [c for c in llm.calls if "formal-verification" in c["system"]]
+    assert len(calls) == 2
+    assert "DID NOT RUN" in calls[1]["prompt"]
+    assert "Member \"exec\" not found" in calls[1]["prompt"]
+
+
+def test_halmos_setup_failure_is_retried(tmp_path):
+    state = _state_patched(tmp_path)
+    llm = StubLLM(["diff test", "bad halmos", "halmos test"])
+    setup = (
+        "Running 1 tests for test/Verify.t.sol:Check\n"
+        "Error: setUp() failed: HalmosException: No successful path found in setUp()\n"
+        "Symbolic test result: 0 passed; 1 failed; time: 0.29s\n"
+    )
+    sandbox = QueueSandbox(
+        [REG_PASS, DIFF_PASS, setup, HALMOS_PROVED],
+        exit_codes=[0, 0, 1, 0],
+    )
+    update = run_verification(state, llm, sandbox)
+    assert update["status"] is AuditStatus.VERIFIED
+    calls = [c for c in llm.calls if "formal-verification" in c["system"]]
+    assert len(calls) == 2
+    assert "No successful path found in setUp" in calls[1]["prompt"]
+
+
+def test_halmos_counterexample_is_not_retried(tmp_path):
+    state = _state_patched(tmp_path)
+    llm = StubLLM(["diff test", "halmos test", "should not be asked"])
+    sandbox = QueueSandbox([REG_PASS, DIFF_PASS, HALMOS_CEX], exit_codes=[0, 0, 1])
+    update = run_verification(state, llm, sandbox)
+    assert "status" not in update
+    calls = [c for c in llm.calls if "formal-verification" in c["system"]]
+    assert len(calls) == 1
+
+
 def test_differential_failure_blocks_verified(tmp_path):
     state = _state_patched(tmp_path)
     llm = StubLLM(["bad diff", "bad diff", "bad diff", "halmos test"])

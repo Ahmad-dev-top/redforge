@@ -1,11 +1,20 @@
-"""Compile-enabler: fetch a repo's dependencies on the trusted host.
+"""Compile-enabler: resolve a repo's dependencies on the trusted host.
 
-The sandbox has no network, so a Foundry repo whose libs live in `lib/` (git
-submodules) or a Hardhat repo needing `node_modules` can't compile inside it —
-Slither/forge then see nothing. We resolve deps on the HOST, where git/npm and
-the network are available, BEFORE the repo is mounted read-only into the locked
-sandbox. Dependency resolution is trusted host work; UNTRUSTED code still only
-ever executes inside the no-network sandbox. This preserves the safety model.
+The audit sandbox has no network, so anything a repo needs to compile must be in
+place BEFORE the sandbox is sealed. Two kinds of dependency:
+
+1. In-repo deps (git submodules, npm `node_modules`, soldeer `dependencies/`) —
+   resolved here on the HOST, where git/npm/forge and the network are available.
+   They land inside the repo dir, which is then mounted read-only into the
+   sandbox, so the no-network compile finds them.
+2. The solc compiler itself — a toolchain binary, not a repo file, so it can't be
+   fetched this way. A range of solc versions is pre-baked into the sandbox image
+   (see docker/sandbox.Dockerfile) so forge never needs to download one at audit
+   time. Here we only DETECT the required version and warn if a repo pins one, so
+   a still-empty Slither run is explainable rather than silent.
+
+Dependency resolution is trusted host work; UNTRUSTED code still only ever
+executes inside the no-network sandbox. This preserves the safety model.
 
 `plan_fetch` is pure (returns the commands) so it's unit-testable without a
 network; `fetch_dependencies` executes them.
@@ -13,6 +22,8 @@ network; `fetch_dependencies` executes them.
 
 from __future__ import annotations
 
+import re
+import shutil
 import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -28,27 +39,59 @@ class DepsResult:
     ok: bool
     ran: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    required_solc: str | None = None
+
+
+def _uses_soldeer(repo_path: Path) -> bool:
+    if (repo_path / "soldeer.lock").exists():
+        return True
+    ft = repo_path / "foundry.toml"
+    if ft.exists():
+        txt = ft.read_text(errors="ignore")
+        return "[dependencies]" in txt or "[soldeer]" in txt
+    return False
 
 
 def plan_fetch(repo_map: RepoMap, repo_path: Path) -> list[list[str]]:
-    """Return the commands needed to populate dependencies, or [] if none."""
+    """Return every applicable dependency command. These are INDEPENDENT — a
+    single repo can need submodules AND npm AND soldeer (e.g. a Foundry repo that
+    imports @openzeppelin/@api3 via npm), so this is no longer either/or."""
     repo_path = Path(repo_path)
     cmds: list[list[str]] = []
-    is_foundry = repo_map.kind is ProjectKind.FOUNDRY
-    is_hardhat = repo_map.kind is ProjectKind.HARDHAT
-    if is_foundry and (repo_path / ".gitmodules").exists():
+    if (repo_path / ".gitmodules").exists():
         cmds.append(["git", "submodule", "update", "--init", "--recursive"])
-    elif is_hardhat and (repo_path / "package.json").exists():
+    if (repo_path / "package.json").exists():
         cmds.append(["npm", "ci"])  # exec falls back to `npm install`
+    if _uses_soldeer(repo_path):
+        cmds.append(["forge", "soldeer", "install"])
     return cmds
 
 
+def detect_required_solc(repo_map: RepoMap, repo_path: Path) -> str | None:
+    """The concrete solc version the repo needs, if pinned. project_detector
+    already reads foundry.toml / pragma into repo_map.solc_version; fall back to
+    scanning foundry.toml here. Returns a version-ish string (may include a range)."""
+    if repo_map.solc_version:
+        return repo_map.solc_version
+    ft = repo_path / "foundry.toml"
+    if ft.exists():
+        m = re.search(r"solc(?:_version)?\s*=\s*[\"']([^\"']+)[\"']", ft.read_text(errors="ignore"))
+        if m:
+            return m.group(1)
+    return None
+
+
 def _run(argv: list[str], cwd: Path, timeout_s: int) -> tuple[bool, str]:
+    # Windows ships npm as npm.cmd. CreateProcess does not apply PATHEXT, so
+    # resolve the executable first or `npm ci` fails with WinError 2.
+    resolved = list(argv)
+    exe = shutil.which(resolved[0])
+    if exe:
+        resolved[0] = exe
     try:
         proc = subprocess.run(
-            argv, cwd=str(cwd), capture_output=True, text=True,
-            encoding="utf-8", errors="replace",
-            timeout=timeout_s, check=False,
+            resolved, cwd=str(cwd), capture_output=True, text=True,
+            encoding="utf-8", errors="replace", timeout=timeout_s, check=False,
         )
         if proc.returncode != 0:
             return False, (proc.stderr or proc.stdout).strip()[:500]
@@ -60,15 +103,14 @@ def _run(argv: list[str], cwd: Path, timeout_s: int) -> tuple[bool, str]:
 def fetch_dependencies(
     repo_path: Path | str,
     repo_map: RepoMap,
-    timeout_s: int = 1800,
+    timeout_s: int = 300,
 ) -> DepsResult:
     repo_path = Path(repo_path)
-    cmds = plan_fetch(repo_map, repo_path)
-    if not cmds:
-        log.info("no dependency step for %s", repo_map.kind.value)
-        return DepsResult(ok=True)
+    result = DepsResult(ok=True, required_solc=detect_required_solc(repo_map, repo_path))
+    if result.required_solc:
+        log.info("repo pins solc %s", result.required_solc)
 
-    result = DepsResult(ok=True)
+    cmds = plan_fetch(repo_map, repo_path)
     for argv in cmds:
         ok, err = _run(argv, repo_path, timeout_s)
         label = " ".join(argv)
@@ -88,7 +130,8 @@ def fetch_dependencies(
         result.warnings.append(f"{label}: {err}")
         log.warning("deps failed: %s — %s", label, err)
 
-    # Best-effort sanity note for Foundry: did forge-std land?
+    # Explainability: if Foundry and forge-std still isn't present, the compile
+    # (and therefore Slither) will likely be empty — say so rather than fail quietly.
     if repo_map.kind is ProjectKind.FOUNDRY and not list((repo_path / "lib").glob("forge-std*")):
         result.warnings.append("lib/forge-std not present — forge tests may not compile")
     return result

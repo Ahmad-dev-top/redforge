@@ -51,7 +51,7 @@ def clone_repo(url: str, run_id: str) -> Path:
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=120,
+            timeout=1800,
         )
     except subprocess.CalledProcessError as exc:
         raise RepoCloneError(exc.stderr.strip() or "git clone failed") from exc

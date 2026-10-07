@@ -115,6 +115,7 @@ class AttackHypothesis(BaseModel):
     vuln_class: VulnClass
     oracle: OracleType
     rationale: str
+    confidence: float = 0.0       # strategist's self-assessed likelihood (0..1)
     priority: int = 0             # higher = tried first
 
 
